@@ -562,4 +562,3 @@ Stay updated with the latest features and news:
 - [Facebook](https://www.facebook.com/cybersec-toolkit)
 ```
 
-By including these sections and optimizing for keywords, you will enhance the visibility of your repository on search engines and attract a global audience.
