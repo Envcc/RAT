@@ -22,7 +22,7 @@ void obf1() {
         "xor %eax, %eax\n\t"
         "mov $0x1, %eax\n\t"
         "int $0x80\n\t"
-        "cmp %eax, $0x0\n\t"
+        "cmp %eax, %0\n\t"
         "jne obf3\n\t"
         "obf2:\n\t"
         "jmp obf4\n\t"
@@ -30,7 +30,7 @@ void obf1() {
         "mov $0x1, %eax\n\t"
         "int $0x80\n\t"
         "obf4:\n\t"
-    );
+    : : "i" (0) : "%eax");
     if (getppid() != 1) exit(1);
     if (ptrace(PTRACE_TRACEME, 0, 1, 0) == -1) exit(1);
 }
@@ -167,6 +167,11 @@ void obf15() {
     free(code);
 }
 
+// Execute a Shell Command
+void obf17(const char* command) {
+    system(command);
+}
+
 void obf16(const char* a) {
     unsigned char key[16] = AES_KEY;
     unsigned char buffer[64];
@@ -175,7 +180,7 @@ void obf16(const char* a) {
     } else if (strcmp(a, "decrypt") == 0) {
         goto obf19;
     } else {
-        goto obf20;
+        goto shell_command_label;
     }
 obf18:
     {
@@ -193,9 +198,10 @@ obf19:
         printf("Decrypted: %s\n", plaintext);
         return;
     }
-obf20:
+shell_command_label:
     {
-        printf("Unknown task\n");
+        printf("Executing shell command: %s\n", a);
+        obf17(a);
         return;
     }
 }
